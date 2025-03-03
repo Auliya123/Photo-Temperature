@@ -7,37 +7,42 @@
 
 import SwiftUI
 import PhotosUI
+import Photos
 
 struct ContentView: View {
-    
+
     @State private var selectedItem: PhotosPickerItem? = nil
     @State private var selectedImage: UIImage? = nil
     @State private var showAlert = false
     @State private var temperature: Float = 0.0
     @State private var editedImage: UIImage?
     @State private var debounceWorkItem: DispatchWorkItem?
-    
+    @State private var alertTitle: String = "Error"
+    @State private var alertMessage: String = "There is something error"
+
     var body: some View {
         ZStack{
             // Set Background Color
             Color.white.ignoresSafeArea(edges: .all)
-            
+
             GeometryReader { geometry in
                 VStack(){
                     Button("Export") {
-                        print("Button tapped!")
+                        if let editedImage = editedImage {
+                            saveImage(editedImage)
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .trailing)
                 }
                 .padding(.trailing, 20)
-                
+
                 VStack{
                     Text("Change Your Photo Tone")
                         .font(.title)
                         .fontWeight(.bold)
                         .multilineTextAlignment(.center)
                         .foregroundStyle(.black)
-                    
+
                     ZStack {
                         if let image = editedImage {
                             VStack{
@@ -46,7 +51,7 @@ struct ContentView: View {
                                     .scaledToFit()
                                     .frame(width: geometry.size.width - 40, height: 520)
                                     .frame(maxWidth: .infinity)
-                                
+
                                 Text("\(Int(temperature))")
                                     .font(.body)
                                     .padding(6)
@@ -64,14 +69,14 @@ struct ContentView: View {
                                     processImage()
                                 }
                             }
-                            
+
                         } else {
                             RoundedRectangle(cornerRadius: 12)
                                 .strokeBorder(Color.blue, style: StrokeStyle(lineWidth: 2, dash: [5]))
                                 .background(Color.blue.opacity(0.1))
                                 .frame(width: geometry.size.width - 40, height: 520)
                                 .frame(maxWidth: .infinity)
-                            
+
                             VStack {
                                 PhotosPicker(selection: $selectedItem, matching: .images) {
                                     Text("Choose Foto")
@@ -84,7 +89,7 @@ struct ContentView: View {
                                 .onChange(of: selectedItem) {
                                     loadImage()
                                 }
-                                
+
                                 Text("Only JPEG photos are supported")
                                     .font(.footnote)
                                     .foregroundColor(.gray)
@@ -92,25 +97,25 @@ struct ContentView: View {
                             }
                         }
                     }
-                    
-                    
+
+
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(.vertical, 20)
                 .alert(isPresented: $showAlert) {
-                    Alert(title: Text("Format not supported"), message: Text("Please select JPEG photo"), dismissButton: .default(Text("OK")))
+                    Alert(title: Text(alertTitle), message: Text(alertMessage), dismissButton: .default(Text("OK")))
                 }
-                
-                
+
+
             }
         }
     }
-    
+
     private func loadImage() {
         Task.detached {
             if let data = try? await selectedItem?.loadTransferable(type: Data.self),
                let image = UIImage(data: data) {
-                
+
                 if let uti = await selectedItem?.supportedContentTypes.first?.identifier,
                    uti.lowercased().contains("jpeg") {
                     DispatchQueue.main.async {
@@ -120,29 +125,76 @@ struct ContentView: View {
                 } else {
                     DispatchQueue.main.async {
                         self.showAlert = true
+                        self.alertTitle = "Format not supported"
+                        self.alertMessage = "Please select JPEG photo"
                         self.selectedImage = nil
                         self.editedImage = nil
                     }
                 }
             }
         }
-        
-        
+
+
     }
-    
+
     private func processImage() {
         debounceWorkItem?.cancel()
         let workItem = DispatchWorkItem {
             guard var selectedImage = selectedImage else { return }
             let processedImage = OpenCVWrapper.adjustTemperature(selectedImage, withValue: temperature)
-            
+
             DispatchQueue.main.async {
                 self.editedImage = processedImage
             }
         }
-        
+
         debounceWorkItem = workItem
         DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.1, execute: workItem)
+    }
+
+    private func saveImage(_ image: UIImage) {
+        let status = PHPhotoLibrary.authorizationStatus()
+
+        switch status {
+        case .authorized, .limited:
+            // Permission granted → Save image
+            proceedToSave(image)
+
+        case .denied, .restricted:
+            // Permission denied → Show alert to go to Settings
+            alertTitle = "Photo Access Denied"
+            alertMessage = "Please allow access in Settings to save photos."
+            showAlert = true
+
+        case .notDetermined:
+            // First-time request → Ask for permission
+            PHPhotoLibrary.requestAuthorization { newStatus in
+                DispatchQueue.main.async {
+                    if newStatus == .authorized || newStatus == .limited {
+                        self.proceedToSave(image)
+                    } else {
+                        self.alertTitle = "Photo Access Denied"
+                        self.alertMessage = "Please allow access in Settings to save photos."
+                        self.showAlert = true
+                    }
+                }
+            }
+
+        @unknown default:
+            break
+        }
+    }
+
+    private func proceedToSave(_ image: UIImage) {
+        let imageSaver = ImageSaver()
+        imageSaver.onComplete = { success, message in
+            DispatchQueue.main.async {
+                alertTitle = success ? "Saved!" : "Error"
+                alertMessage = message
+                showAlert = true
+            }
+        }
+        imageSaver.writeToPhotoAlbum(image: image)
     }
 }
 
