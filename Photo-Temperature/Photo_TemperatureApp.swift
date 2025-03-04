@@ -11,7 +11,7 @@ import SwiftUI
 struct Photo_TemperatureApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            PhotoPickerView()
         }
     }
 }
